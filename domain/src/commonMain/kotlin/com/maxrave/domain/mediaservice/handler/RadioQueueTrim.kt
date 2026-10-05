@@ -48,6 +48,19 @@ object RadioQueueTrim {
             !playlistId.removePrefix("VL").startsWith("RDCLAK")
 
     /**
+     * Remove radio results whose video IDs are already in the live queue, including its retained
+     * played/skipped history. The same ID is also accepted only once from [incoming].
+     */
+    fun <T> excludeAlreadyQueued(
+        queue: List<T>,
+        incoming: List<T>,
+        idOf: (T) -> String,
+    ): List<T> {
+        val seenIds = queue.mapTo(mutableSetOf(), idOf)
+        return incoming.filter { seenIds.add(idOf(it)) }
+    }
+
+    /**
      * How many tracks to drop from the FRONT of a radio queue, or 0 when it should be left alone.
      *
      * [currentIndex] is the playing track's index and therefore also the number of tracks behind

@@ -66,6 +66,17 @@ class RadioQueueTrimTest {
     }
 
     @Test
+    fun `does not append a radio track already present in played or skipped history`() {
+        val queuedHistoryAndUpcoming = listOf("currently-playing", "skipped-track", "next-track")
+        val nextRadioPage = listOf("skipped-track", "new-track", "new-track", "another-track")
+
+        assertEquals(
+            listOf("new-track", "another-track"),
+            RadioQueueTrim.excludeAlreadyQueued(queuedHistoryAndUpcoming, nextRadioPage) { it },
+        )
+    }
+
+    @Test
     fun `cuts the mirrored queue only when the removed tracks are its front`() {
         val queue = listOf("a", "b", "a", "c", "d")
         assertEquals(

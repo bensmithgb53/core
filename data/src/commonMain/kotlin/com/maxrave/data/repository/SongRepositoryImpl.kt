@@ -377,13 +377,13 @@ internal class SongRepositoryImpl(
                         ).onSuccess { next ->
                             val data: ArrayList<SongItem> = arrayListOf()
                             // Only this branch can be a radio — the `else` below continues a real
-                            // playlist. `RRDAMVM…` counts as one too: it is YouTube's other
-                            // spelling for the radio of a single video, which `isRadioQueueId`
-                            // deliberately does not match because it never appears as a queue's
-                            // own playlistId.
+                            // playlist. `RRDAMVM…` is YouTube's other spelling for a single-video
+                            // radio. A curated RDCLAK playlist is still a finite playlist, not radio.
                             val isRadio =
-                                playlistId.startsWith("RRDAMVM") || playlistId.isRadioQueueId()
-                            data.addAll(next.items.preferAudioWhenRadioAudioOnly(isRadio))
+                                playlistId.startsWith("RRDAMVM") ||
+                                    (playlistId.isRadioQueueId() && !playlistId.removePrefix("VL").startsWith("RDCLAK"))
+                            val songs = next.items.preferAudioWhenRadioAudioOnly(isRadio)
+                            data.addAll(if (isRadio) songs.distinctRadioSongs() else songs)
                             newContinuation = next.continuation
                             emit(Pair(data.toListTrack(), newContinuation))
                         }.onFailure { exception ->
@@ -546,13 +546,14 @@ internal class SongRepositoryImpl(
                         // just two rows — the song itself and an `automixPreviewVideoRenderer`
                         // pointing at its `RDAMVM…` radio. `YouTube.next` follows that pointer and
                         // splices the radio in, so everything here past the first row is radio
-                        // content, and this is what extends the queue once it runs dry.
+                        // content, and this is what extends the queue once it runs dry. Deduplicate
+                        // by video ID: YouTube can return the same song with changed metadata, so
+                        // SongItem equality does not reliably identify a repeated track.
                         data.addAll(
                             next.items
                                 .filter { it.id != videoId }
-                                .toSet()
-                                .toList()
-                                .preferAudioWhenRadioAudioOnly(isRadio = true),
+                                .preferAudioWhenRadioAudioOnly(isRadio = true)
+                                .distinctRadioSongs(),
                         )
                         val nextContinuation = next.continuation
                         emit(Resource.Success<Pair<List<Track>, String?>>(Pair(data.toListTrack().toList(), nextContinuation)))
@@ -569,11 +570,17 @@ internal class SongRepositoryImpl(
                 youTube
                     .next(endpoint.toWatchEndpoint())
                     .onSuccess { next ->
+                        val playlistId = endpoint.playlistId
+                        val isRadio =
+                            playlistId != null &&
+                                playlistId.isRadioQueueId() &&
+                                !playlistId.removePrefix("VL").startsWith("RDCLAK")
                         val items =
                             next.items.preferAudioWhenRadioAudioOnly(
-                                isRadio = endpoint.playlistId?.isRadioQueueId() == true,
+                                isRadio = isRadio,
                             )
-                        emit(Resource.Success(Pair(items.toListTrack(), next.continuation)))
+                        val uniqueItems = if (isRadio) items.distinctRadioSongs() else items
+                        emit(Resource.Success(Pair(uniqueItems.toListTrack(), next.continuation)))
                     }.onFailure {
                         it.printStackTrace()
                         emit(Resource.Error(it.message ?: "Error"))

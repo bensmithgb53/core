@@ -1714,7 +1714,14 @@ class JvmMediaPlayerHandlerImpl(
                             val list = response?.first
                             if (list != null) {
                                 Logger.w(TAG, "Check loadMore response $response")
-                                loadMoreCatalog(list)
+                                val queuedData = queueData.value.data
+                                val tracksToAppend =
+                                    if (RadioQueueTrim.appliesTo(queuedData.playlistType, playlistId)) {
+                                        RadioQueueTrim.excludeAlreadyQueued(queuedData.listTracks, list) { it.videoId }
+                                    } else {
+                                        list
+                                    }
+                                loadMoreCatalog(tracksToAppend.toCollection(arrayListOf()))
                                 _queueData.update {
                                     it.copy(
                                         data =
@@ -1793,7 +1800,15 @@ class JvmMediaPlayerHandlerImpl(
             songRepository.getRelatedData(videoId).collect { response ->
                 when (response) {
                     is Resource.Success -> {
-                        loadMoreCatalog(response.data?.first?.toCollection(arrayListOf()) ?: arrayListOf())
+                        val recommendations = response.data?.first.orEmpty()
+                        val queuedData = queueData.value.data
+                        val tracksToAppend =
+                            if (RadioQueueTrim.appliesTo(queuedData.playlistType, queuedData.playlistId)) {
+                                RadioQueueTrim.excludeAlreadyQueued(queuedData.listTracks, recommendations) { it.videoId }
+                            } else {
+                                recommendations
+                            }
+                        loadMoreCatalog(tracksToAppend.toCollection(arrayListOf()))
                         _queueData.update {
                             it.copy(
                                 data =
