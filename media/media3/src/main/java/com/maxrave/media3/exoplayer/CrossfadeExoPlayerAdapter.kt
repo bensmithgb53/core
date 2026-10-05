@@ -337,6 +337,7 @@ internal class CrossfadeExoPlayerAdapter(
     private var precacheEnabled = true
     private val maxPrecacheCount = 2
     private var precacheJob: Job? = null
+    private var precacheRefreshJob: Job? = null
 
     // ========== Crossfade System ==========
 
@@ -821,7 +822,17 @@ internal class CrossfadeExoPlayerAdapter(
                 commitIncomingAsCurrentInternal()
             }
             if (hasNextMediaItem()) {
-                seekTo(getNextMediaItemIndex(), 0)
+                val currentIndex = localCurrentMediaItemIndex
+                val currentShufflePosition =
+                    if (internalShuffleModeEnabled) shuffleIndices.getOrNull(currentIndex) ?: -1 else -1
+                val nextIndex = getNextMediaItemIndex()
+                Logger.d(
+                    TAG,
+                    "seekToNext selection: shuffle=$internalShuffleModeEnabled, repeat=$internalRepeatMode, " +
+                        "currentIndex=$currentIndex, shufflePosition=$currentShufflePosition, " +
+                        "order=$shuffleOrder, nextIndex=$nextIndex",
+                )
+                seekTo(nextIndex, 0)
             } else if (wasCrossfading) {
                 // A+1 was the last track — stay on it (already promoted), just refresh metadata.
                 forwardingPlayer.notifyMediaItemChanged()
@@ -917,11 +928,8 @@ internal class CrossfadeExoPlayerAdapter(
 
         notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
 
-        if (playlist.size - 1 - currentMediaItemIndex <= maxPrecacheCount) {
-            coroutineScope.launch {
-                clearPrecacheExceptCurrentInternal()
-                triggerPrecachingInternal()
-            }
+        if (internalShuffleModeEnabled || playlist.size - 1 - currentMediaItemIndex <= maxPrecacheCount) {
+            schedulePrecacheRefresh()
         }
     }
 
@@ -951,11 +959,8 @@ internal class CrossfadeExoPlayerAdapter(
 
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
 
-            if (index - 1 - currentMediaItemIndex <= maxPrecacheCount) {
-                coroutineScope.launch {
-                    clearPrecacheExceptCurrentInternal()
-                    triggerPrecachingInternal()
-                }
+            if (internalShuffleModeEnabled || index - 1 - currentMediaItemIndex <= maxPrecacheCount) {
+                schedulePrecacheRefresh()
             }
         }
     }
@@ -1158,6 +1163,13 @@ internal class CrossfadeExoPlayerAdapter(
 
             notifyTimelineChanged("TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED")
 
+            if (internalShuffleModeEnabled) {
+                precacheRefreshJob?.cancel()
+                precacheRefreshJob = null
+                cancelPrecaching()
+                clearPrecacheExceptCurrentInternal()
+            }
+
             if (index == localCurrentMediaItemIndex) {
                 loadAndPlayTrackInternal(index, 0, internalPlayWhenReady)
             } else {
@@ -1350,6 +1362,14 @@ internal class CrossfadeExoPlayerAdapter(
             } else {
                 clearShuffleOrder()
             }
+
+            // The upcoming tracks changed with the traversal order. Drop players prepared for
+            // the old order and warm the new next items before the user skips to them.
+            precacheRefreshJob?.cancel()
+            precacheRefreshJob = null
+            cancelPrecaching()
+            clearPrecacheExceptCurrentInternal()
+            triggerPrecachingInternal()
 
             val mediaItemList = getShuffledMediaItemList()
             listeners.forEach { it.onShuffleModeEnabledChanged(value, mediaItemList) }
@@ -3061,18 +3081,37 @@ internal class CrossfadeExoPlayerAdapter(
                     val indicesToPrecache = mutableListOf<Int>()
 
                     val index = localCurrentMediaItemIndex
-                    for (i in 1..maxPrecacheCount) {
-                        val nextIndex =
-                            when (internalRepeatMode) {
-                                PlayerConstants.REPEAT_MODE_ALL -> {
-                                    (index + i) % playlist.size
-                                }
-                                else -> {
-                                    val next = index + i
-                                    if (next < playlist.size) next else break
-                                }
+                    if (internalShuffleModeEnabled && shuffleOrder.isNotEmpty()) {
+                        val currentShufflePosition = shuffleIndices.getOrNull(index) ?: -1
+                        if (currentShufflePosition >= 0) {
+                            for (i in 1..maxPrecacheCount) {
+                                val nextShufflePosition = currentShufflePosition + i
+                                val resolvedShufflePosition =
+                                    when {
+                                        nextShufflePosition < shuffleOrder.size -> nextShufflePosition
+                                        internalRepeatMode == PlayerConstants.REPEAT_MODE_ALL ->
+                                            nextShufflePosition % shuffleOrder.size
+                                        else -> break
+                                    }
+                                val nextIndex = shuffleOrder.getOrNull(resolvedShufflePosition) ?: continue
+                                if (nextIndex != index) indicesToPrecache.add(nextIndex)
                             }
+                        }
+                    } else if (!internalShuffleModeEnabled) {
+                        for (i in 1..maxPrecacheCount) {
+                            val nextIndex =
+                                when (internalRepeatMode) {
+                                    PlayerConstants.REPEAT_MODE_ALL -> (index + i) % playlist.size
+                                    else -> {
+                                        val next = index + i
+                                        if (next < playlist.size) next else break
+                                    }
+                                }
+                            indicesToPrecache.add(nextIndex)
+                        }
+                    }
 
+                    for (nextIndex in indicesToPrecache) {
                         val nextVideoId = playlist.getOrNull(nextIndex)?.mediaId
                         // A live broadcast is not precached: buffered ahead, it would start behind
                         // the live edge by however long it waited in the queue.
@@ -3112,6 +3151,19 @@ internal class CrossfadeExoPlayerAdapter(
     private fun cancelPrecaching() {
         precacheJob?.cancel()
         precacheJob = null
+    }
+
+    /** Coalesce radio batches so the final shuffle order, not each intermediate append, is warmed. */
+    private fun schedulePrecacheRefresh() {
+        precacheRefreshJob?.cancel()
+        precacheRefreshJob =
+            coroutineScope.launch {
+                delay(50)
+                cancelPrecaching()
+                clearPrecacheExceptCurrentInternal()
+                triggerPrecachingInternal()
+                precacheRefreshJob = null
+            }
     }
 
     private fun clearPrecacheExceptCurrentInternal() {

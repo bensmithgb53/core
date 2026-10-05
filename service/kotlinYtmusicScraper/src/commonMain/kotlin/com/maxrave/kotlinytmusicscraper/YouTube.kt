@@ -1404,14 +1404,14 @@ class YouTube {
         listUrlSig.forEach {
             Logger.d(TAG, "YouTube NewPipe URL $it")
         }
-        val randomUrl = listUrlSig.randomOrNull() ?: return null
-        if (listUrlSig.isNotEmpty() && !is403Url(randomUrl)) {
-            Logger.d(TAG, "YouTube NewPipe Found URL $randomUrl")
-            return decodedSigResponse
-        } else {
+        if (listUrlSig.isEmpty()) {
             Logger.d(TAG, "YouTube NewPipe No URL Found")
             return null
         }
+        // Don't add another network round trip before returning a freshly decoded URL. The selected
+        // media format is checked by ExoPlayer's actual GET, and its retry path refreshes HTTP errors.
+        Logger.d(TAG, "YouTube NewPipe Found ${listUrlSig.size} stream URL(s); defer validation to playback")
+        return decodedSigResponse
     }
 
     fun isManifestUrl(url: String): Boolean = url.contains(".m3u8") || url.contains(".mpd") || url.contains("manifest")
