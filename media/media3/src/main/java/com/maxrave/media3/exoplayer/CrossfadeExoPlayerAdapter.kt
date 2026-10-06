@@ -3111,19 +3111,17 @@ internal class CrossfadeExoPlayerAdapter(
                         }
                     }
 
-                    for (nextIndex in indicesToPrecache) {
-                        val nextVideoId = playlist.getOrNull(nextIndex)?.mediaId
-                        // A live broadcast is not precached: buffered ahead, it would start behind
-                        // the live edge by however long it waited in the queue.
-                        if (nextIndex != localCurrentMediaItemIndex &&
-                            !precachedPlayers.containsKey(nextVideoId) &&
-                            nextVideoId?.let(LiveStreamRegistry::isLive) != true
-                        ) {
-                            indicesToPrecache.add(nextIndex)
+                    val filteredIndicesToPrecache =
+                        indicesToPrecache.filter { nextIndex ->
+                            val nextVideoId = playlist.getOrNull(nextIndex)?.mediaId
+                            // A live broadcast is not precached: buffered ahead, it would start behind
+                            // the live edge by however long it waited in the queue.
+                            nextIndex != localCurrentMediaItemIndex &&
+                                !precachedPlayers.containsKey(nextVideoId) &&
+                                nextVideoId?.let(LiveStreamRegistry::isLive) != true
                         }
-                    }
 
-                    for (idx in indicesToPrecache) {
+                    for (idx in filteredIndicesToPrecache) {
                         if (!isActive) break
 
                         val mediaItem = playlist.getOrNull(idx) ?: continue
